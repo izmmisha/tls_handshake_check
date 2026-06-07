@@ -8,6 +8,8 @@ from scapy.layers.tls.extensions import ServerName
 from ja4plus import generate_ja4
 from ja4plus.utils.tls_utils import parse_tls_handshake
 
+import secrets
+
 def ja4(client_hello_file):
     with open(client_hello_file, "rb") as client_hello:
         raw_tls_bytes = client_hello.read()
@@ -41,6 +43,18 @@ def payload(orig_payload, fix_sni):
     client_hello.extlen = None
     return bytes(tls_packet)
 
+@pytest.fixture
+def payload_factory(payload):
+    tls_packet = TLS(payload)
+    client_hello = tls_packet.msg[0]
+    sidlen = client_hello.sidlen
+    payload = list(payload)
+    def _update_session():
+        for i,b in enumerate(secrets.token_bytes(sidlen)):
+            payload[i + 44] = b
+        return bytes(payload)
+    return _update_session
+
 async def request(payload, host, port):
     reader, writer = await asyncio.open_connection(host, port)
     try:
@@ -54,15 +68,15 @@ async def request(payload, host, port):
         await writer.wait_closed()
 
 @pytest.mark.asyncio
-async def test_handshake_single(payload, host, port):
+async def test_handshake_single(payload_factory, host, port):
     async with asyncio.timeout(10):
-        response = await request(payload, host, port)
+        response = await request(payload_factory(), host, port)
         assert response
 
 @pytest.mark.asyncio
-async def test_handshake_parallel(payload, host, port):
+async def test_handshake_parallel(payload_factory, host, port):
     async with asyncio.timeout(30):
-        tasks = [request(payload, host, port) for _ in range(5)]
+        tasks = [request(payload_factory(), host, port) for _ in range(5)]
         results = await asyncio.gather(*tasks)
         for response in results:
              assert response
